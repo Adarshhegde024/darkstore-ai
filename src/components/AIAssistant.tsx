@@ -28,77 +28,106 @@ const AIAssistant = ({ onClose }: AIAssistantProps) => {
     if (!input.trim()) return;
 
     const userMessage: Message = { role: "user", content: input };
-    const newMessages = [...messages, userMessage];
-    setMessages(newMessages);
+    const history = [...messages, userMessage];
+    setMessages(history);
     setInput("");
 
-    // Add a placeholder message for the assistant
-    const assistantPlaceholder: Message = { role: "assistant", content: "" };
-    setMessages(prev => [...prev, assistantPlaceholder]);
+    // Assistant placeholder for streaming tokens
+    setMessages(prev => [...prev, { role: "assistant", content: "" }]);
 
     try {
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-assistant-chat`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            messages: newMessages,
-            prompt: input
-          }),
-        }
-      );
+      const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-assistant-chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          // Public function, auth optional. Add header if needed:
+          // Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        },
+        body: JSON.stringify({ messages: history }),
+      });
 
-      if (!response.ok) {
-        throw new Error('Failed to get response');
-      }
+      if (!resp.ok || !resp.body) throw new Error(`Failed to start stream (${resp.status})`);
 
-      const reader = response.body?.getReader();
+      const reader = resp.body.getReader();
       const decoder = new TextDecoder();
-      let assistantResponse = "";
+      let textBuffer = "";
+      let assistantSoFar = "";
 
       while (true) {
-        const { done, value } = await reader!.read();
+        const { done, value } = await reader.read();
         if (done) break;
+        textBuffer += decoder.decode(value, { stream: true });
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n').filter(line => line.trim());
+        let newlineIndex: number;
+        while ((newlineIndex = textBuffer.indexOf("\n")) !== -1) {
+          let line = textBuffer.slice(0, newlineIndex);
+          textBuffer = textBuffer.slice(newlineIndex + 1);
 
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
+          if (line.endsWith("\r")) line = line.slice(0, -1);
+          if (line.startsWith(":") || line.trim() === "") continue; // comments/keepalive
+          if (!line.startsWith("data: ")) continue;
 
-            try {
-              const parsed = JSON.parse(data);
-              if (parsed.text) {
-                assistantResponse += parsed.text;
-                setMessages(prev => {
-                  const newMsgs = [...prev];
-                  newMsgs[newMsgs.length - 1] = {
-                    role: "assistant",
-                    content: assistantResponse
-                  };
-                  return newMsgs;
-                });
-              }
-            } catch (e) {
-              console.error('Error parsing chunk:', e);
+          const jsonStr = line.slice(6).trim();
+          if (jsonStr === "[DONE]") {
+            break;
+          }
+
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const delta = parsed.choices?.[0]?.delta?.content as string | undefined;
+            if (delta) {
+              assistantSoFar += delta;
+              setMessages(prev => {
+                const last = prev[prev.length - 1];
+                if (last?.role === "assistant") {
+                  const copy = [...prev];
+                  copy[copy.length - 1] = { ...last, content: assistantSoFar };
+                  return copy;
+                }
+                return [...prev, { role: "assistant", content: assistantSoFar }];
+              });
             }
+          } catch {
+            // Incomplete JSON, push back and wait for more
+            textBuffer = line + "\n" + textBuffer;
+            break;
           }
         }
       }
-    } catch (error) {
-      console.error('Error sending message:', error);
+
+      // Flush leftover lines if any
+      if (textBuffer.trim()) {
+        for (let raw of textBuffer.split("\n")) {
+          if (!raw) continue;
+          if (raw.endsWith("\r")) raw = raw.slice(0, -1);
+          if (raw.startsWith(":") || raw.trim() === "") continue;
+          if (!raw.startsWith("data: ")) continue;
+          const jsonStr = raw.slice(6).trim();
+          if (jsonStr === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const delta = parsed.choices?.[0]?.delta?.content as string | undefined;
+            if (delta) {
+              assistantSoFar += delta;
+              setMessages(prev => {
+                const last = prev[prev.length - 1];
+                if (last?.role === "assistant") {
+                  const copy = [...prev];
+                  copy[copy.length - 1] = { ...last, content: assistantSoFar };
+                  return copy;
+                }
+                return [...prev, { role: "assistant", content: assistantSoFar }];
+              });
+            }
+          } catch { /* ignore leftovers */ }
+        }
+      }
+    } catch (err) {
+      console.error(err);
       setMessages(prev => {
-        const newMsgs = [...prev];
-        newMsgs[newMsgs.length - 1] = {
-          role: "assistant",
-          content: "Sorry, I encountered an error. Please try again."
-        };
-        return newMsgs;
+        const copy = [...prev];
+        copy[copy.length - 1] = { role: "assistant", content: "Sorry, I hit an error. Please try again." };
+        return copy;
       });
     }
   };
