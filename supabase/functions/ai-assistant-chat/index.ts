@@ -51,7 +51,7 @@ serve(async (req) => {
 
     if (!response.ok) {
       const error = await response.text();
-      console.error('Gemini API error:', error);
+      console.error('Gemini API error:', response.status, error);
       throw new Error(`Gemini API error: ${response.status}`);
     }
 
@@ -63,31 +63,62 @@ serve(async (req) => {
     const stream = new ReadableStream({
       async start(controller) {
         try {
+          let buffer = '';
+          
           while (true) {
             const { done, value } = await reader!.read();
             if (done) break;
 
-            const chunk = decoder.decode(value);
-            const lines = chunk.split('\n').filter(line => line.trim());
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            
+            // Keep the last incomplete line in the buffer
+            buffer = lines.pop() || '';
 
             for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                const jsonStr = line.slice(6);
-                try {
-                  const data = JSON.parse(jsonStr);
-                  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-                  if (text) {
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text })}\n\n`));
-                  }
-                } catch (e) {
-                  console.error('Error parsing JSON:', e);
+              const trimmedLine = line.trim();
+              if (!trimmedLine || trimmedLine === '[{' || trimmedLine === '}]') continue;
+
+              try {
+                // Remove trailing comma if present
+                const cleanLine = trimmedLine.endsWith(',') 
+                  ? trimmedLine.slice(0, -1) 
+                  : trimmedLine;
+                
+                const data = JSON.parse(cleanLine);
+                console.log('Parsed Gemini data:', JSON.stringify(data));
+                
+                const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (text) {
+                  console.log('Sending text chunk:', text);
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text })}\n\n`));
                 }
+              } catch (e) {
+                console.error('Error parsing line:', trimmedLine, e);
               }
             }
           }
+
+          // Process any remaining buffer
+          if (buffer.trim()) {
+            try {
+              const cleanBuffer = buffer.trim().endsWith(',') 
+                ? buffer.trim().slice(0, -1) 
+                : buffer.trim();
+              const data = JSON.parse(cleanBuffer);
+              const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+              if (text) {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text })}\n\n`));
+              }
+            } catch (e) {
+              console.error('Error parsing final buffer:', e);
+            }
+          }
+
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
           controller.close();
         } catch (error) {
+          console.error('Stream error:', error);
           controller.error(error);
         }
       },
