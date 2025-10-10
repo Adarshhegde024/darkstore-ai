@@ -1,17 +1,29 @@
+import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Package, TrendingUp, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
 
-const inventoryItems = [
-  { name: "Amul Milk 1L", category: "Dairy", stock: 124, status: "healthy", demand: "high", price: "₹62" },
-  { name: "Lays Classic 52g", category: "Snacks", stock: 8, status: "low", demand: "high", price: "₹20" },
-  { name: "Coca Cola 750ml", category: "Beverages", stock: 245, status: "healthy", demand: "medium", price: "₹40" },
-  { name: "Britannia Bread", category: "Bakery", stock: 32, status: "expiring", demand: "high", price: "₹35" },
-  { name: "Tata Salt 1kg", category: "Grocery", stock: 156, status: "healthy", demand: "low", price: "₹25" },
-  { name: "Red Bull 250ml", category: "Beverages", stock: 5, status: "critical", demand: "medium", price: "₹125" },
-  { name: "Parle-G 376g", category: "Snacks", stock: 89, status: "healthy", demand: "high", price: "₹45" },
-  { name: "Haldiram Bhujia", category: "Snacks", stock: 15, status: "low", demand: "high", price: "₹55" },
-];
+interface Product {
+  id: string;
+  name: string;
+  category: string;
+  stock: number;
+  reorder_threshold: number;
+  price: number;
+  expiry_date: string | null;
+  demand_level: string;
+}
+
+const getStatus = (product: Product) => {
+  if (product.stock <= 5) return 'critical';
+  if (product.stock < product.reorder_threshold) return 'low';
+  if (product.expiry_date) {
+    const daysUntilExpiry = Math.ceil((new Date(product.expiry_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+    if (daysUntilExpiry <= 7) return 'expiring';
+  }
+  return 'healthy';
+};
 
 const getStatusColor = (status: string) => {
   switch (status) {
@@ -34,6 +46,33 @@ const getStatusIcon = (status: string) => {
 };
 
 const InventoryGrid = () => {
+  const [products, setProducts] = useState<Product[]>([]);
+
+  useEffect(() => {
+    fetchProducts();
+
+    // Subscribe to real-time updates
+    const channel = supabase
+      .channel('products-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+        fetchProducts();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const fetchProducts = async () => {
+    const { data } = await supabase
+      .from('products')
+      .select('*')
+      .order('name');
+    
+    if (data) setProducts(data);
+  };
+
   return (
     <Card className="p-6 bg-card border-border">
       <div className="flex items-center justify-between mb-6">
@@ -47,57 +86,60 @@ const InventoryGrid = () => {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {inventoryItems.map((item, index) => (
-          <div 
-            key={index}
-            className="p-4 rounded-lg border border-border bg-secondary/30 hover:bg-secondary/50 transition-colors"
-          >
-            <div className="flex justify-between items-start mb-2">
-              <div className="flex-1">
-                <h4 className="font-semibold text-foreground text-sm">{item.name}</h4>
-                <p className="text-xs text-muted-foreground">{item.category}</p>
-              </div>
-              <Badge className={getStatusColor(item.status)}>
-                {getStatusIcon(item.status)}
-                <span className="ml-1 capitalize">{item.status}</span>
-              </Badge>
-            </div>
-            
-            <div className="flex justify-between items-center mt-3">
-              <div className="flex items-center gap-4">
-                <div>
-                  <p className="text-xs text-muted-foreground">Stock</p>
-                  <p className="text-sm font-bold text-foreground">{item.stock} units</p>
+        {products.map((item) => {
+          const status = getStatus(item);
+          return (
+            <div 
+              key={item.id}
+              className="p-4 rounded-lg border border-border bg-secondary/30 hover:bg-secondary/50 transition-colors"
+            >
+              <div className="flex justify-between items-start mb-2">
+                <div className="flex-1">
+                  <h4 className="font-semibold text-foreground text-sm">{item.name}</h4>
+                  <p className="text-xs text-muted-foreground">{item.category}</p>
                 </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Demand</p>
-                  <div className="flex items-center gap-1">
-                    {item.demand === "high" && <TrendingUp className="w-3 h-3 text-success" />}
-                    <p className="text-sm font-semibold text-foreground capitalize">{item.demand}</p>
+                <Badge className={getStatusColor(status)}>
+                  {getStatusIcon(status)}
+                  <span className="ml-1 capitalize">{status}</span>
+                </Badge>
+              </div>
+              
+              <div className="flex justify-between items-center mt-3">
+                <div className="flex items-center gap-4">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Stock</p>
+                    <p className="text-sm font-bold text-foreground">{item.stock} units</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Demand</p>
+                    <div className="flex items-center gap-1">
+                      {item.demand_level === "high" && <TrendingUp className="w-3 h-3 text-success" />}
+                      <p className="text-sm font-semibold text-foreground capitalize">{item.demand_level}</p>
+                    </div>
                   </div>
                 </div>
+                <div className="text-right">
+                  <p className="text-xs text-muted-foreground">Price</p>
+                  <p className="text-sm font-bold text-primary">₹{item.price}</p>
+                </div>
               </div>
-              <div className="text-right">
-                <p className="text-xs text-muted-foreground">Price</p>
-                <p className="text-sm font-bold text-primary">{item.price}</p>
-              </div>
-            </div>
 
-            {item.status === "low" || item.status === "critical" ? (
-              <div className="mt-3 p-2 bg-warning/10 rounded border border-warning/30">
-                <p className="text-xs text-warning">
-                  AI Recommendation: Restock {item.status === "critical" ? "immediately" : "within 24 hours"}
-                </p>
-              </div>
-            ) : item.status === "expiring" ? (
-              <div className="mt-3 p-2 bg-warning/10 rounded border border-warning/30">
-                <p className="text-xs text-warning">
-                  Expiring in 3 days - Consider promotion
-                </p>
-              </div>
-            ) : null}
-          </div>
-        ))}
+              {status === "low" || status === "critical" ? (
+                <div className="mt-3 p-2 bg-warning/10 rounded border border-warning/30">
+                  <p className="text-xs text-warning">
+                    AI Recommendation: Restock {status === "critical" ? "immediately" : "within 24 hours"}
+                  </p>
+                </div>
+              ) : status === "expiring" ? (
+                <div className="mt-3 p-2 bg-warning/10 rounded border border-warning/30">
+                  <p className="text-xs text-warning">
+                    Expiring soon - Consider promotion
+                  </p>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
     </Card>
   );
