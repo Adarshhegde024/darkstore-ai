@@ -24,26 +24,83 @@ const AIAssistant = ({ onClose }: AIAssistantProps) => {
   ]);
   const [input, setInput] = useState("");
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!input.trim()) return;
 
     const userMessage: Message = { role: "user", content: input };
-    setMessages([...messages, userMessage]);
-
-    // Simulate AI response
-    setTimeout(() => {
-      const responses = [
-        "Based on current trends, Lays Classic 52g and Red Bull 250ml need immediate restocking. They're at critical levels with high demand.",
-        "Your top sellers this week are: 1) Amul Milk 1L (245 units), 2) Parle-G (189 units), 3) Coca Cola 750ml (167 units). All showing healthy stock levels.",
-        "AI Analysis: Weekend demand is predicted to spike by 32%. I recommend increasing stock for Snacks (+40%), Beverages (+25%), and Dairy (+15%) categories by Friday.",
-        "Currently, 7 items need attention: 6 are running low, and 1 (Britannia Bread) is expiring in 3 days. Would you like me to generate a restock order?",
-      ];
-      const randomResponse = responses[Math.floor(Math.random() * responses.length)];
-      const aiMessage: Message = { role: "assistant", content: randomResponse };
-      setMessages(prev => [...prev, aiMessage]);
-    }, 1000);
-
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
     setInput("");
+
+    // Add a placeholder message for the assistant
+    const assistantPlaceholder: Message = { role: "assistant", content: "" };
+    setMessages(prev => [...prev, assistantPlaceholder]);
+
+    try {
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-assistant-chat`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            messages: newMessages,
+            prompt: input
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to get response');
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let assistantResponse = "";
+
+      while (true) {
+        const { done, value } = await reader!.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n').filter(line => line.trim());
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') continue;
+
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.text) {
+                assistantResponse += parsed.text;
+                setMessages(prev => {
+                  const newMsgs = [...prev];
+                  newMsgs[newMsgs.length - 1] = {
+                    role: "assistant",
+                    content: assistantResponse
+                  };
+                  return newMsgs;
+                });
+              }
+            } catch (e) {
+              console.error('Error parsing chunk:', e);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error sending message:', error);
+      setMessages(prev => {
+        const newMsgs = [...prev];
+        newMsgs[newMsgs.length - 1] = {
+          role: "assistant",
+          content: "Sorry, I encountered an error. Please try again."
+        };
+        return newMsgs;
+      });
+    }
   };
 
   return (
