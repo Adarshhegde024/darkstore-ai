@@ -28,8 +28,13 @@ const AIAssistant = ({ onClose }: AIAssistantProps) => {
     if (!input.trim()) return;
 
     const userMessage: Message = { role: "user", content: input };
-    const history = [...messages, userMessage];
-    setMessages(history);
+    const rawHistory = [...messages, userMessage];
+    // Remove previous generic error messages from context and cap history size
+    const cleanedHistory = rawHistory
+      .filter(m => !(m.role === "assistant" && m.content.includes("Sorry, I hit an error")))
+      .slice(-20);
+
+    setMessages(rawHistory);
     setInput("");
 
     // Assistant placeholder for streaming tokens
@@ -43,9 +48,22 @@ const AIAssistant = ({ onClose }: AIAssistantProps) => {
           // Public function, auth optional. Add header if needed:
           // Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
         },
-        body: JSON.stringify({ messages: history }),
+        body: JSON.stringify({ messages: cleanedHistory }),
       });
 
+      if (resp.status === 402 || resp.status === 429) {
+        let data: any = {};
+        try { data = await resp.json(); } catch {}
+        const msg = data?.error ?? (resp.status === 402
+          ? "Payment required, please add credits to your workspace."
+          : "Rate limits exceeded, please try again later.");
+        setMessages(prev => {
+          const copy = [...prev];
+          copy[copy.length - 1] = { role: "assistant", content: msg };
+          return copy;
+        });
+        return;
+      }
       if (!resp.ok || !resp.body) throw new Error(`Failed to start stream (${resp.status})`);
 
       const reader = resp.body.getReader();

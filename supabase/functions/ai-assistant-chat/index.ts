@@ -22,7 +22,7 @@ serve(async (req) => {
       body: JSON.stringify({
         model: "google/gemini-2.5-flash",
         messages: [
-          { role: "system", content: "You are DarkStore AI's helpful store operations assistant. Be concise, actionable, and accurate." },
+          { role: "system", content: "You are DarkStore AI's store operations assistant. Focus on inventory, demand, and stock optimization. If a request lacks data, ask concise clarifying questions and use only information provided in the conversation. If users ask general knowledge, answer briefly. Never claim to access internal systems unless data is provided. Keep responses concise and actionable." },
           ...(Array.isArray(messages) ? messages : []),
         ],
         stream: true,
